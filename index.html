@@ -940,6 +940,7 @@ function renderChat() {
   let h = rows.length ? '' : `<div class="msg assistant">Tell me what you ate ("2 chicken rolls at the canteen"), how you feel ("too full", "not in the mood for fried rice"), or ask what to eat next. I'll log things and adjust your next 3 hours.</div>`;
   rows.forEach(r => {
     h += `<div class="msg ${r.role === 'user' ? 'user' : 'assistant'}">${esc(r.text)}</div>`;
+    if (r.retry) h += `<div class="row" style="margin:-2px 0 10px"><button class="btn sm accent" data-act="retryChat" data-v="${esc(r.id)}">Try again</button></div>`;
     if (r.role !== 'user' && r.actions) {
       let a; try { a = typeof r.actions === 'string' ? JSON.parse(r.actions) : r.actions; } catch (e) { a = null; }
       if (a && a.items && a.items.length) h += `<div class="acts-card small">${a.items.map(describeAction).join('<br>')}<div class="row" style="margin-top:8px">${a.applied ? `<span class="muted">Logged</span>` : `<button class="btn sm accent" data-act="applyActs" data-v="${esc(r.id)}">Log these</button><button class="btn sm ghost" data-act="skipActs" data-v="${esc(r.id)}">Skip</button>`}</div></div>`;
@@ -979,7 +980,7 @@ async function sendChat(text) {
     const j = await api('chat', { message: text, context: chatContext(), date: d, userId: tmpId });
     S.db.Chat = S.db.Chat.filter(r => r.id !== tmpId); S.db.Chat.push(j.userRow, j.botRow); persist();
   } catch (e) {
-    S.db.Chat.push({ id: uid('a'), ts: new Date().toISOString().slice(0, 19), date: d, role: 'assistant', text: 'Could not reach Pace: ' + e.message, actions: '' });
+    S.db.Chat.push({ id: uid('a'), ts: new Date().toISOString().slice(0, 19), date: d, role: 'assistant', text: 'Could not reach Pace: ' + e.message, actions: '', retry: text, userTmp: tmpId });
   }
   S.chatBusy = false; renderChat();
 }
@@ -1109,6 +1110,11 @@ const A = {
   sendChat: () => sendChat($('#chatIn').value),
   chip: b => { const v = b.dataset.v; if (v.endsWith(' ')) { $('#chatIn').value = v; $('#chatIn').focus(); } else sendChat(v); },
   applyActs: b => applyActions(b.dataset.v),
+  retryChat: b => {
+    const r = S.db.Chat.find(x => x.id === b.dataset.v); if (!r) return;
+    S.db.Chat = S.db.Chat.filter(x => x.id !== r.id && x.id !== r.userTmp); persist();
+    sendChat(r.retry);
+  },
   skipActs: b => { const r = S.db.Chat.find(x => x.id === b.dataset.v); try { const a = JSON.parse(r.actions); a.applied = true; a.items = []; save('Chat', { ...r, actions: JSON.stringify(a) }); } catch (e) {} renderChat(); }
 };
 document.addEventListener('click', e => {
