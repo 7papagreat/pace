@@ -287,7 +287,7 @@ const SEED_PROFILE = { height:178, weight:60, sex:'male', goal:'lean_gain', wake
   meal_breakfast:'09:45', meal_lunch:'13:30', meal_snack:'17:00', meal_dinner:'20:30', steps_target:8000, stand_target:6, creatine_g:5, milkshake_daily:'yes' };
 
 const TABLES = ['Log','Checkins','Measurements','Dishes','Templates','Plan','Chat','Health'];
-const NUMF = new Set(['qty','grams','kcal','protein','carbs','fat','fibre','water_ml','value','sleep_hours','sleep_q','weight','waist','neck','chest','arm','thigh','hip','rating','steps','active_kcal']);
+const NUMF = new Set(['qty','grams','kcal','protein','carbs','fat','fibre','water_ml','value','sleep_hours','sleep_q','weight','waist','neck','chest','arm','thigh','hip','rating','steps','active_kcal','active_hours']);
 
 const METRICS = {
   protein:{label:'Protein',unit:'g'}, kcal:{label:'Calories',unit:'kcal',band:true}, water:{label:'Water',unit:'ml'},
@@ -392,8 +392,14 @@ function prof() {
     meals: { breakfast: p.meal_breakfast || '09:45', lunch: p.meal_lunch || '13:30', snack: p.meal_snack || '17:00', dinner: p.meal_dinner || '20:30' } };
 }
 const checkin = d => S.db.Checkins.find(c => c.date === d);
+const jparse = (v, dflt) => { if (v && typeof v === 'object') return v; try { return v ? JSON.parse(v) : dflt; } catch (e) { return dflt; } };
+function health(d) {
+  const h = S.db.Health.find(x => x.date === d); if (!h) return null;
+  return { ...h, hourly: jparse(h.hourly, []), workouts: jparse(h.workouts, []), sources: jparse(h.sources, {}) };
+}
 function weightOn(d) {
   const pts = [...S.db.Checkins.filter(c => c.weight && c.date <= d).map(c => [c.date, c.weight]),
+               ...S.db.Health.filter(h => h.weight && h.date <= d).map(h => [h.date, h.weight]),
                ...S.db.Measurements.filter(m => m.weight && m.date <= d).map(m => [m.date, m.weight])].sort((a, b) => a[0] < b[0] ? -1 : 1);
   return pts.length ? num(pts[pts.length - 1][1]) : prof().weight;
 }
@@ -446,16 +452,20 @@ const tplById = id => S.db.Templates.find(t => t.id === id);
 function totals(d) {
   S._memo = S._memo || {}; const key = 'A' + d; if (S._memo[key]) return S._memo[key];
   const t = { kcal: 0, protein: 0, carbs: 0, fat: 0, fibre: 0, water: 0, steps: 0, stand: 0, creatine: 0, foods: 0, weighed: 0 };
-  let manualSteps = 0;
+  let manualSteps = 0; const standHours = new Set();
   for (const r of (S.idx[d] || [])) {
     if (r.kind === 'food') { ['kcal','protein','carbs','fat','fibre'].forEach(k => t[k] += num(r[k])); t.water += num(r.water_ml); t.foods++; if (r.confidence === 'weighed') t.weighed++; }
     else if (r.kind === 'water') t.water += num(r.water_ml);
     else if (r.kind === 'steps') manualSteps += num(r.value);
-    else if (r.kind === 'stand') t.stand += num(r.value) || 1;
+    else if (r.kind === 'stand') standHours.add(Math.floor((toMin(String(r.ts).slice(11, 16)) || 0) / 60));
     else if (r.kind === 'creatine') t.creatine += num(r.value);
   }
-  const h = S.db.Health.find(x => x.date === d);
-  t.steps = Math.max(manualSteps, h ? num(h.steps) : 0);
+  const h = health(d);
+  // Phone steps are already merged without duplicates; the +1,000 button is for walking without a phone.
+  t.steps = (h ? num(h.steps) : 0) + manualSteps; t.manualSteps = manualSteps;
+  // Any hour with 250+ phone steps counts as a standing hour, plus hours you tapped.
+  if (h) h.hourly.forEach((v, i) => { if (num(v) >= 250) standHours.add(i); });
+  t.stand = standHours.size; t.autoStand = h ? h.hourly.filter(v => num(v) >= 250).length : 0;
   for (const k of ['kcal','protein','carbs','fat','fibre']) t[k] = r1(t[k]);
   return (S._memo[key] = t);
 }
@@ -556,7 +566,7 @@ function next3h(d) {
   }
   // standing
   const stNeed = Math.ceil(T.stand * curve('stand', Math.min(H, W.bed - 60), W, meals) - A.stand);
-  if (stNeed > 0) out.push({ k: 'stand', text: `Stand for ${Math.min(stNeed, 3)} of the next 3 hours`, sub: 'Tap "I stood" after each one.' });
+  if (stNeed > 0) out.push({ k: 'stand', text: `Stand for ${Math.min(stNeed, 3)} of the next 3 hours`, sub: 'Hours where your phones count 250+ steps count automatically; tap "I stood" for the rest.' });
   // creatine
   if (A.creatine < T.creatine) out.push({ k: 'supp', text: `Take ${T.creatine} g creatine`, sub: 'Timing is flexible; with your next meal is easiest.' });
   // training
@@ -726,26 +736,34 @@ function vToday() {
   h += `<div class="card"><h3>Quick log</h3><div class="quick">
       <button class="btn" data-act="water" data-v="250">+250 ml water</button><button class="btn" data-act="water" data-v="500">+500 ml water</button>
       <button class="btn" data-act="creatine">Creatine taken</button><button class="btn" data-act="stood">I stood this hour</button>
-      <button class="btn" data-act="steps" data-v="1000">+1,000 steps</button><button class="btn" data-act="tab" data-v="log">Log food</button></div>
+      <button class="btn" data-act="steps" data-v="1000">+1,000 steps (no phone)</button><button class="btn" data-act="tab" data-v="log">Log food</button></div>
       <div class="row" style="margin-top:10px"><input type="text" id="feelIn" placeholder="How do you feel? e.g. too full, low energy" style="flex:1"><button class="btn sm" data-act="feel">Save</button></div></div>`;
   h += `</div><div>`;
   h += `<div class="card"><div class="row sp"><h3>Today so far</h3>${c ? `<button class="btn sm ghost" data-act="editCheckin">Edit check-in</button>` : ''}</div>
      ${metricRows(d, ['protein','kcal','water','steps','fibre','carbs','fat','stand','creatine'])}
-     <p class="small muted">The small orange line on each bar is where you should be by now.</p></div>`;
+     <p class="small muted">The small orange line on each bar is where you should be by now.</p>${phonesLine(d)}</div>`;
   const G = game();
   h += `<div class="card"><div class="row sp"><h3>This week's challenge</h3><span class="small muted">+50 points</span></div><p>${esc(G.ch.text)}</p>
      <div class="prog"><i style="width:${G.ch.done / G.ch.goal * 100}%"></i></div><p class="small muted">${G.ch.done} of ${G.ch.goal} days</p></div>`;
   h += `</div></div>`;
   return h;
 }
+const SRC_NAMES = { ios: 'iPhone', android: 'Android' };
+const ago = iso => { if (!iso) return 'never'; const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000); return m < 2 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'; };
+function phonesLine(d) {
+  const h = health(d); if (!h) return S.cfg.url ? `<p class="small muted">No phone data yet today. See Me, then Phone health data.</p>` : '';
+  const parts = Object.entries(h.sources).map(([k, v]) => `${SRC_NAMES[k] || esc(k)} ${fmtN(v.steps)}`);
+  const w = h.workouts.length ? `<br>Workouts from phones: ${h.workouts.map(x => `${esc(x.type)} ${x.min} min at ${fmtMin(toMin(x.start))}`).join(', ')}.` : '';
+  return `<p class="small muted">Steps by phone: ${parts.join(', ')}. Merged hour by hour, no double counting: <b>${fmtN(h.steps)}</b>. ${h.active_hours || 0} active hours counted as standing.${w}</p>`;
+}
 function checkinForm(d) {
-  const c = checkin(d) || {}, p = prof(), dt = c.day_type || S.ciType || 'rest';
+  const c = checkin(d) || {}, p = prof(), dt = c.day_type || S.ciType || 'rest', hh = health(d) || {};
   S.ciType = dt;
-  return `<div class="card" id="ci"><h2>Morning check-in</h2><p class="small muted">This sets today's pacing. Takes 20 seconds.</p>
+  return `<div class="card" id="ci"><h2>Morning check-in</h2><p class="small muted">This sets today's pacing. Takes 20 seconds.${hh.sleep_hours ? ` Sleep and wake time are filled in from your phone (${esc(hh.bed)} to ${esc(hh.wake)}); correct them if they're off.` : ''}</p>
    <div class="fields">
-    <div><label class="f" for="ciWake">Woke up at</label><input type="time" id="ciWake" value="${esc(c.wake || p.wake)}"></div>
+    <div><label class="f" for="ciWake">Woke up at</label><input type="time" id="ciWake" value="${esc(c.wake || hh.wake || p.wake)}"></div>
     <div><label class="f" for="ciBed">Bed tonight</label><input type="time" id="ciBed" value="${esc(c.bed || p.bed)}"></div>
-    <div><label class="f" for="ciSleep">Slept (hours)</label><input type="number" step="0.25" id="ciSleep" value="${esc(c.sleep_hours || '')}"></div>
+    <div><label class="f" for="ciSleep">Slept (hours)</label><input type="number" step="0.25" id="ciSleep" value="${esc(c.sleep_hours || hh.sleep_hours || '')}"></div>
     <div><label class="f" for="ciW">Weight (kg, optional)</label><input type="number" step="0.1" id="ciW" value="${esc(c.weight || '')}"></div>
    </div>
    <label class="f" style="margin-top:10px">Sleep quality</label><div class="row" id="ciQ">${[1,2,3,4,5].map(q => `<button class="chip ${num(c.sleep_q) === q ? 'on' : ''}" data-act="ciQ" data-v="${q}">${q}</button>`).join('')}</div>
@@ -925,6 +943,7 @@ function vMe() {
   const ms = S.db.Measurements.slice().sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 6);
   if (ms.length) h += `<ul class="list">${ms.map(m => `<li><span class="grow">${esc(m.date)}: ${['weight','waist','neck','chest','arm','thigh'].filter(k => m[k]).map(k => `${k} ${m[k]}`).join(', ')}</span><button class="btn icon sm ghost" data-act="delMeasure" data-v="${esc(m.id)}" aria-label="Delete">✕</button></li>`).join('')}</ul>`;
   h += `</div>`;
+  h += healthCard();
   h += `<div class="card"><h2>Connection</h2><p class="small muted">Paste the Web app URL and token from your Apps Script (see the setup guide). Everything also stays on this device, so the app works offline.</p>
     <div class="stack"><div><label class="f" for="cfgUrl">Web app URL</label><input type="url" id="cfgUrl" value="${esc(S.cfg.url || '')}" placeholder="https://script.google.com/macros/s/…/exec"></div>
     <div><label class="f" for="cfgTok">Token</label><input type="password" id="cfgTok" value="${esc(S.cfg.token || '')}"></div></div>
@@ -932,6 +951,19 @@ function vMe() {
     ${S.syncErr ? `<p class="small" style="color:var(--berry)">${esc(S.syncErr)}</p>` : ''}</div>`;
   h += `</div></div>`;
   return h;
+}
+
+function healthCard() {
+  const t = today(), hh = health(t) || { sources: {} };
+  const hook = S.cfg.url && S.cfg.token ? `${S.cfg.url}?token=${encodeURIComponent(S.cfg.token)}&source=android` : '';
+  const row = k => { const v = hh.sources[k]; return `<li><span class="grow"><b>${SRC_NAMES[k]}</b><br><span class="small muted">${v ? `${fmtN(v.steps)} steps today, last sync ${ago(v.last)}` : 'No data received today yet'}</span></span></li>`; };
+  return `<div class="card"><h2>Phone health data</h2>
+    <p class="small muted">Both phones send steps, sleep and workouts to your Sheet. Steps are merged hour by hour, keeping the higher phone for each hour, so walking with both phones in your pocket never counts twice.</p>
+    <ul class="list">${row('ios')}${row('android')}</ul>
+    ${hook ? `<label class="f" for="hookUrl" style="margin-top:8px">Android webhook URL (paste into Health Connect Webhook)</label>
+      <div class="row"><input type="text" id="hookUrl" readonly value="${esc(hook)}" style="flex:1"><button class="btn sm" data-act="copyHook">Copy</button></div>
+      <p class="small muted">This URL contains your token, so treat it like a password.</p>` : `<p class="small muted">Connect your Sheet below first; the Android webhook URL will appear here.</p>`}
+    <p class="small muted">Setup steps for both phones are in the setup guide, Part 6.</p></div>`;
 }
 
 /* ---------- chat ---------- */
@@ -1110,6 +1142,7 @@ const A = {
   sendChat: () => sendChat($('#chatIn').value),
   chip: b => { const v = b.dataset.v; if (v.endsWith(' ')) { $('#chatIn').value = v; $('#chatIn').focus(); } else sendChat(v); },
   applyActs: b => applyActions(b.dataset.v),
+  copyHook: () => copyText(val('hookUrl')),
   retryChat: b => {
     const r = S.db.Chat.find(x => x.id === b.dataset.v); if (!r) return;
     S.db.Chat = S.db.Chat.filter(x => x.id !== r.id && x.id !== r.userTmp); persist();
