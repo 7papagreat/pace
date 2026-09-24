@@ -1,0 +1,14 @@
+{
+  "name": "Pace",
+  "short_name": "Pace",
+  "description": "Your next 3 hours of food, water, movement and sleep.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ECEFF3",
+  "theme_color": "#17223B",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
